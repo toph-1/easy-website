@@ -1,522 +1,326 @@
 #!/bin/bash
 
-# Website Manager with Cloudflare
-# Usage: ./website-manager.sh
+# Simple Website Tool for Kali
+# Usage: ./site-tool.sh
 
-# Color codes for better UI
-RED='\033[0;31m'
+# Colors for Kali (green on black theme)
 GREEN='\033[0;32m'
-BLUE='\033[0;34m'
+RED='\033[0;31m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# Configuration
-SITES_DIR="$HOME/websites"
-CONFIG_FILE="$HOME/.website_manager.conf"
-CLOUDFLARE_TUNNEL="/tmp/cloudflare_tunnel_$PROJECT_NAME.pid"
+# Config
+SITE_DIR="$HOME/kali_site"
+PORT="8080"
+TUNNEL_PID_FILE="/tmp/cloudflare_tunnel.pid"
+SERVER_PID_FILE="/tmp/local_server.pid"
 
-# Create necessary directories
-mkdir -p "$SITES_DIR"
+# Check if running as root (common in Kali)
+if [ "$EUID" -eq 0 ]; then 
+    echo -e "${YELLOW}⚠️  Running as root${NC}"
+fi
 
-# Load or create config
-load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        source "$CONFIG_FILE"
-    else
-        CLOUDFLARE_EMAIL=""
-        CLOUDFLARE_API_KEY=""
-        DEFAULT_SUBDOMAIN=""
-    fi
-}
-
-# Save config
-save_config() {
-    cat > "$CONFIG_FILE" << EOF
-CLOUDFLARE_EMAIL="$CLOUDFLARE_EMAIL"
-CLOUDFLARE_API_KEY="$CLOUDFLARE_API_KEY"
-DEFAULT_SUBDOMAIN="$DEFAULT_SUBDOMAIN"
-EOF
-}
-
-# Check if Cloudflare is installed
-check_cloudflare() {
+# Install cloudflared if needed
+install_cloudflared() {
     if ! command -v cloudflared &> /dev/null; then
-        echo -e "${YELLOW}cloudflared not found. Installing...${NC}"
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            brew install cloudflared
-        elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-            wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-            chmod +x cloudflared-linux-amd64
-            sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-        else
-            echo -e "${RED}Please install cloudflared manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation${NC}"
-            return 1
-        fi
+        echo -e "${YELLOW}[+] Installing cloudflared for Kali...${NC}"
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+        chmod +x cloudflared-linux-amd64
+        sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+        echo -e "${GREEN}[✓] Cloudflared installed${NC}"
     fi
-    return 0
 }
 
-# Create a new website
+# Create default website
 create_website() {
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}Create New Website${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}[+] Creating website in $SITE_DIR${NC}"
+    mkdir -p "$SITE_DIR"
     
-    read -p "Website name: " SITE_NAME
-    SITE_PATH="$SITES_DIR/$SITE_NAME"
-    
-    if [ -d "$SITE_PATH" ]; then
-        echo -e "${RED}Website already exists!${NC}"
-        return 1
-    fi
-    
-    mkdir -p "$SITE_PATH"
-    
-    echo -e "${YELLOW}Select website type:${NC}"
-    echo "1) Static HTML site"
-    echo "2) PHP site (requires PHP server)"
-    echo "3) Node.js site (requires npm)"
-    echo "4) Python/Flask site"
-    read -p "Choice [1-4]: " SITE_TYPE
-    
-    case $SITE_TYPE in
-        1)
-            create_static_site "$SITE_PATH" "$SITE_NAME"
-            ;;
-        2)
-            create_php_site "$SITE_PATH" "$SITE_NAME"
-            ;;
-        3)
-            create_node_site "$SITE_PATH" "$SITE_NAME"
-            ;;
-        4)
-            create_python_site "$SITE_PATH" "$SITE_NAME"
-            ;;
-        *)
-            echo -e "${RED}Invalid choice${NC}"
-            return 1
-            ;;
-    esac
-    
-    echo -e "${GREEN}✓ Website created at: $SITE_PATH${NC}"
-    echo "$SITE_NAME:$SITE_PATH:$SITE_TYPE" >> "$SITES_DIR/sites.list"
-}
-
-# Create static HTML site
-create_static_site() {
-    local path=$1
-    local name=$2
-    
-    cat > "$path/index.html" << EOF
+    cat > "$SITE_DIR/index.html" << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>$name - My Website</title>
+    <title>Kali Site</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+            color: #00ff41;
+            font-family: 'Courier New', monospace;
             display: flex;
             justify-content: center;
             align-items: center;
+            height: 100vh;
+            margin: 0;
+            text-shadow: 0 0 5px #00ff41;
         }
         .container {
-            background: white;
+            text-align: center;
+            border: 2px solid #00ff41;
             padding: 2rem;
             border-radius: 10px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            text-align: center;
+            background: rgba(0,0,0,0.8);
+            box-shadow: 0 0 20px rgba(0,255,65,0.3);
         }
-        h1 { color: #667eea; }
-        .status { color: #4CAF50; font-weight: bold; }
+        h1 { font-size: 3em; margin: 0; }
+        .status { color: #00ff41; animation: blink 1s infinite; }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .url { background: #000; padding: 10px; border-radius: 5px; margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🚀 $name</h1>
-        <p>Your website is <span class="status">LIVE!</span></p>
-        <p>Deployed with Cloudflare Tunnel</p>
-        <p id="timestamp"></p>
+        <h1>🐉 KALI WEBSITE</h1>
+        <p>Status: <span class="status">● LIVE</span></p>
+        <p>Serving from your Kali machine</p>
+        <div class="url" id="url">Local: http://localhost:8080</div>
+        <p><small>Press Ctrl+C to stop</small></p>
     </div>
     <script>
-        document.getElementById('timestamp').innerHTML = 'Server time: ' + new Date().toLocaleString();
+        setInterval(() => {
+            fetch('/ping')
+                .then(response => response.text())
+                .catch(console.log);
+        }, 30000);
     </script>
 </body>
 </html>
 EOF
     
-    mkdir -p "$path/css" "$path/js" "$path/images"
-    echo "/* Custom styles */" > "$path/css/style.css"
-    echo "// Custom JavaScript" > "$path/js/script.js"
-}
-
-# Create PHP site
-create_php_site() {
-    local path=$1
-    local name=$2
-    
-    cat > "$path/index.php" << EOF
-<!DOCTYPE html>
-<html>
-<head>
-    <title>$name</title>
-    <style>
-        body { font-family: Arial; margin: 50px; background: #f0f0f0; }
-        .container { background: white; padding: 20px; border-radius: 5px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>PHP Site: $name</h1>
-        <p>Server time: <?php echo date('Y-m-d H:i:s'); ?></p>
-        <p>PHP Version: <?php echo phpversion(); ?></p>
-    </div>
-</body>
-</html>
-EOF
-}
-
-# Create Node.js site
-create_node_site() {
-    local path=$1
-    local name=$2
-    
-    cat > "$path/package.json" << EOF
-{
-  "name": "$name",
-  "version": "1.0.0",
-  "description": "Node.js website",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2"
-  }
-}
+    # Add a hacker-style CSS
+    cat > "$SITE_DIR/style.css" << 'EOF'
+body { margin: 0; padding: 0; }
+.hacker-text { color: #0f0; font-family: monospace; }
 EOF
     
-    cat > "$path/server.js" << EOF
-const express = require('express');
-const app = express();
-const port = 3000;
-
-app.use(express.static('public'));
-
-app.get('/', (req, res) => {
-    res.send(\`
-        <!DOCTYPE html>
-        <html>
-        <head><title>$name</title></head>
-        <body style="font-family: Arial; text-align: center; margin-top: 50px;">
-            <h1>🚀 Node.js Website: $name</h1>
-            <p>Server running on port \${port}</p>
-            <p>Time: \${new Date().toLocaleString()}</p>
-        </body>
-        </html>
-    \`);
-});
-
-app.listen(port, () => {
-    console.log(\`Server running at http://localhost:\${port}\`);
-});
-EOF
-    
-    mkdir -p "$path/public"
-    cd "$path" && npm install 2>/dev/null
+    echo -e "${GREEN}[✓] Website created at $SITE_DIR/index.html${NC}"
 }
 
-# Create Python/Flask site
-create_python_site() {
-    local path=$1
-    local name=$2
-    
-    cat > "$path/app.py" << EOF
-from flask import Flask
-from datetime import datetime
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return f'''
-    <!DOCTYPE html>
-    <html>
-    <head><title>$name</title></head>
-    <body style="font-family: Arial; text-align: center; margin-top: 50px;">
-        <h1>🐍 Python/Flask Site: $name</h1>
-        <p>Server time: {datetime.now()}</p>
-        <p>Flask is running!</p>
-    </body>
-    </html>
-    '''
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
-EOF
-    
-    cat > "$path/requirements.txt" << EOF
-flask==2.3.0
-EOF
-}
-
-# Start a website locally
-start_website() {
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}Start Website Locally${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    if [ ! -f "$SITES_DIR/sites.list" ]; then
-        echo -e "${RED}No websites found. Create one first!${NC}"
+# Start local server
+start_local() {
+    if [ -f "$SERVER_PID_FILE" ] && kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
+        echo -e "${YELLOW}[!] Server already running${NC}"
         return 1
     fi
     
-    echo -e "${YELLOW}Available websites:${NC}"
-    cat -n "$SITES_DIR/sites.list"
+    cd "$SITE_DIR"
     
-    read -p "Select website number: " SITE_NUM
-    SITE_INFO=$(sed -n "${SITE_NUM}p" "$SITES_DIR/sites.list")
-    
-    if [ -z "$SITE_INFO" ]; then
-        echo -e "${RED}Invalid selection${NC}"
-        return 1
-    fi
-    
-    SITE_NAME=$(echo "$SITE_INFO" | cut -d':' -f1)
-    SITE_PATH=$(echo "$SITE_INFO" | cut -d':' -f2)
-    SITE_TYPE=$(echo "$SITE_INFO" | cut -d':' -f3)
-    
-    PORT=""
-    case $SITE_TYPE in
-        1)
-            PORT=8000
-            cd "$SITE_PATH" && python3 -m http.server $PORT > /tmp/site_${SITE_NAME}.log 2>&1 &
-            echo $! > "/tmp/site_${SITE_NAME}.pid"
-            echo -e "${GREEN}✓ Static site started on port $PORT${NC}"
-            ;;
-        2)
-            PORT=8080
-            cd "$SITE_PATH" && php -S localhost:$PORT > /tmp/site_${SITE_NAME}.log 2>&1 &
-            echo $! > "/tmp/site_${SITE_NAME}.pid"
-            echo -e "${GREEN}✓ PHP site started on port $PORT${NC}"
-            ;;
-        3)
-            PORT=3000
-            cd "$SITE_PATH" && npm start > /tmp/site_${SITE_NAME}.log 2>&1 &
-            echo $! > "/tmp/site_${SITE_NAME}.pid"
-            echo -e "${GREEN}✓ Node.js site started on port $PORT${NC}"
-            ;;
-        4)
-            PORT=5000
-            cd "$SITE_PATH" && python3 app.py > /tmp/site_${SITE_NAME}.log 2>&1 &
-            echo $! > "/tmp/site_${SITE_NAME}.pid"
-            echo -e "${GREEN}✓ Python site started on port $PORT${NC}"
-            ;;
-    esac
-    
-    echo "http://localhost:$PORT" > "/tmp/site_${SITE_NAME}.url"
-    echo -e "${GREEN}✓ Website running at: http://localhost:$PORT${NC}"
-}
-
-# Stop a website
-stop_website() {
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${RED}Stop Website${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    echo -e "${YELLOW}Running websites:${NC}"
-    for pidfile in /tmp/site_*.pid; do
-        if [ -f "$pidfile" ]; then
-            SITE=$(basename "$pidfile" .pid | sed 's/site_//')
-            echo "- $SITE (PID: $(cat $pidfile))"
-        fi
-    done
-    
-    read -p "Enter website name to stop: " SITE_NAME
-    
-    if [ -f "/tmp/site_${SITE_NAME}.pid" ]; then
-        PID=$(cat "/tmp/site_${SITE_NAME}.pid")
-        kill $PID 2>/dev/null
-        rm "/tmp/site_${SITE_NAME}.pid"
-        rm "/tmp/site_${SITE_NAME}.url" 2>/dev/null
-        
-        # Also stop Cloudflare tunnel if running
-        if [ -f "/tmp/cloudflare_${SITE_NAME}.pid" ]; then
-            CF_PID=$(cat "/tmp/cloudflare_${SITE_NAME}.pid")
-            kill $CF_PID 2>/dev/null
-            rm "/tmp/cloudflare_${SITE_NAME}.pid"
-            echo -e "${GREEN}✓ Cloudflare tunnel stopped${NC}"
-        fi
-        
-        echo -e "${GREEN}✓ Website $SITE_NAME stopped${NC}"
+    # Use Python3 (built into Kali)
+    if command -v python3 &> /dev/null; then
+        python3 -m http.server $PORT > /tmp/local_server.log 2>&1 &
+        echo $! > "$SERVER_PID_FILE"
+        echo -e "${GREEN}[✓] Local server started on port $PORT${NC}"
+        echo -e "${GREEN}[✓] Access at: http://localhost:$PORT${NC}"
     else
-        echo -e "${RED}Website $SITE_NAME is not running${NC}"
+        echo -e "${RED}[✗] Python3 not found${NC}"
+        return 1
     fi
 }
 
-# Deploy to Cloudflare (make public)
-deploy_to_cloudflare() {
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}Deploy to Cloudflare (Make Public)${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    if ! check_cloudflare; then
+# Stop local server
+stop_local() {
+    if [ -f "$SERVER_PID_FILE" ]; then
+        kill $(cat "$SERVER_PID_FILE") 2>/dev/null
+        rm "$SERVER_PID_FILE"
+        echo -e "${GREEN}[✓] Local server stopped${NC}"
+    else
+        echo -e "${YELLOW}[!] No server running${NC}"
+    fi
+}
+
+# Start Cloudflare tunnel
+start_cloudflare() {
+    if [ ! -f "$SERVER_PID_FILE" ]; then
+        echo -e "${RED}[✗] Local server not running. Start it first!${NC}"
         return 1
     fi
     
-    echo -e "${YELLOW}Select website to deploy:${NC}"
-    for pidfile in /tmp/site_*.pid; do
-        if [ -f "$pidfile" ]; then
-            SITE=$(basename "$pidfile" .pid | sed 's/site_//')
-            URL=$(cat "/tmp/site_${SITE}.url" 2>/dev/null)
-            echo "- $SITE ($URL)"
-        fi
-    done
-    
-    read -p "Enter website name: " SITE_NAME
-    
-    if [ ! -f "/tmp/site_${SITE_NAME}.pid" ]; then
-        echo -e "${RED}Website $SITE_NAME is not running. Start it first!${NC}"
+    if [ -f "$TUNNEL_PID_FILE" ] && kill -0 $(cat "$TUNNEL_PID_FILE") 2>/dev/null; then
+        echo -e "${YELLOW}[!] Cloudflare tunnel already running${NC}"
         return 1
     fi
     
-    URL=$(cat "/tmp/site_${SITE_NAME}.url")
-    PORT=$(echo "$URL" | grep -oP ':\K\d+')
+    echo -e "${YELLOW}[+] Starting Cloudflare tunnel...${NC}"
     
-    read -p "Custom subdomain (optional, press enter for random): " SUBDOMAIN
+    # Start tunnel
+    cloudflared tunnel --url http://localhost:$PORT > /tmp/cloudflare.log 2>&1 &
+    echo $! > "$TUNNEL_PID_FILE"
     
-    if [ -z "$SUBDOMAIN" ]; then
-        SUBDOMAIN="website-$(date +%s)"
-    fi
+    sleep 4
     
-    echo -e "${YELLOW}Starting Cloudflare tunnel...${NC}"
-    
-    # Start Cloudflare tunnel
-    cloudflared tunnel --url "http://localhost:$PORT" > "/tmp/cloudflare_${SITE_NAME}.log" 2>&1 &
-    CF_PID=$!
-    echo $CF_PID > "/tmp/cloudflare_${SITE_NAME}.pid"
-    
-    sleep 3
-    
-    # Extract the public URL from logs
-    PUBLIC_URL=$(grep -o 'https://[-a-zA-Z0-9.]*trycloudflare.com' "/tmp/cloudflare_${SITE_NAME}.log" | head -1)
+    # Get the public URL
+    PUBLIC_URL=$(grep -o 'https://[-a-zA-Z0-9.]*trycloudflare.com' /tmp/cloudflare.log | head -1)
     
     if [ -n "$PUBLIC_URL" ]; then
-        echo -e "${GREEN}✓ Website is now PUBLIC!${NC}"
-        echo -e "${GREEN}🔗 Public URL: $PUBLIC_URL${NC}"
-        echo "$PUBLIC_URL" > "/tmp/site_${SITE_NAME}.public_url"
+        echo -e "${GREEN}════════════════════════════════════════${NC}"
+        echo -e "${GREEN}🌍 WEBSITE IS PUBLIC!${NC}"
+        echo -e "${GREEN}════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}Public URL: ${GREEN}$PUBLIC_URL${NC}"
+        echo -e "${YELLOW}Local URL:  ${GREEN}http://localhost:$PORT${NC}"
+        echo -e "${GREEN}════════════════════════════════════════${NC}"
         
-        echo -e "${YELLOW}To stop the tunnel, stop the website or run:${NC}"
-        echo "  ./website-manager.sh -> Stop Website -> $SITE_NAME"
+        # Save URL for later
+        echo "$PUBLIC_URL" > "$SITE_DIR/public_url.txt"
+        
+        # Show QR code (optional, cool for Kali)
+        if command -v qrencode &> /dev/null; then
+            echo -e "${YELLOW}QR Code for mobile access:${NC}"
+            qrencode -t ansiutf8 "$PUBLIC_URL" 2>/dev/null
+        fi
     else
-        echo -e "${RED}Failed to start tunnel. Check logs: /tmp/cloudflare_${SITE_NAME}.log${NC}"
-        kill $CF_PID 2>/dev/null
-        rm "/tmp/cloudflare_${SITE_NAME}.pid"
+        echo -e "${RED}[✗] Failed to start tunnel${NC}"
+        echo -e "${YELLOW}Check log: /tmp/cloudflare.log${NC}"
+        rm "$TUNNEL_PID_FILE"
         return 1
     fi
 }
 
-# Show status of all websites
-show_status() {
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}Website Status${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    echo -e "\n${YELLOW}Local Servers:${NC}"
-    for pidfile in /tmp/site_*.pid; do
-        if [ -f "$pidfile" ]; then
-            SITE=$(basename "$pidfile" .pid | sed 's/site_//')
-            PID=$(cat "$pidfile")
-            URL=$(cat "/tmp/site_${SITE}.url" 2>/dev/null)
-            PUBLIC=$(cat "/tmp/site_${SITE}.public_url" 2>/dev/null)
-            
-            echo -e "  ${GREEN}●${NC} $SITE (PID: $PID)"
-            echo -e "    Local: $URL"
-            [ -n "$PUBLIC" ] && echo -e "    🌍 Public: $PUBLIC"
-        fi
-    done
-    
-    if [ ! -f /tmp/site_*.pid ] 2>/dev/null; then
-        echo -e "  ${RED}No websites running${NC}"
-    fi
-    
-    echo -e "\n${YELLOW}Available Websites:${NC}"
-    if [ -f "$SITES_DIR/sites.list" ]; then
-        cat "$SITES_DIR/sites.list" | while IFS=':' read name path type; do
-            echo -e "  📁 $name ($(basename $path)) - Type: $type"
-        done
+# Stop Cloudflare tunnel
+stop_cloudflare() {
+    if [ -f "$TUNNEL_PID_FILE" ]; then
+        kill $(cat "$TUNNEL_PID_FILE") 2>/dev/null
+        rm "$TUNNEL_PID_FILE"
+        echo -e "${GREEN}[✓] Cloudflare tunnel stopped${NC}"
+        echo -e "${YELLOW}[!] Website is now private again${NC}"
     else
-        echo -e "  No websites created yet"
+        echo -e "${YELLOW}[!] No tunnel running${NC}"
     fi
-    echo ""
+}
+
+# Edit HTML with nano
+edit_html() {
+    if [ -f "$SITE_DIR/index.html" ]; then
+        echo -e "${GREEN}[+] Opening HTML editor (nano)${NC}"
+        echo -e "${YELLOW}Tips:${NC}"
+        echo "  - Ctrl+O to save"
+        echo "  - Ctrl+X to exit"
+        echo "  - Changes appear immediately on refresh"
+        echo ""
+        read -p "Press Enter to continue..."
+        nano "$SITE_DIR/index.html"
+        echo -e "${GREEN}[✓] HTML updated! Refresh your browser to see changes${NC}"
+    else
+        echo -e "${RED}[✗] No website found. Create one first!${NC}"
+    fi
+}
+
+# Show status
+show_status() {
+    clear
+    echo -e "${BLUE}════════════════════════════════════════${NC}"
+    echo -e "${GREEN}🐉 KALI WEBSITE STATUS${NC}"
+    echo -e "${BLUE}════════════════════════════════════════${NC}"
+    
+    # Local server status
+    if [ -f "$SERVER_PID_FILE" ] && kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
+        echo -e "${GREEN}● Local Server: RUNNING${NC}"
+        echo -e "  Port: $PORT"
+        echo -e "  URL:  http://localhost:$PORT"
+    else
+        echo -e "${RED}○ Local Server: STOPPED${NC}"
+    fi
+    
+    # Cloudflare status
+    if [ -f "$TUNNEL_PID_FILE" ] && kill -0 $(cat "$TUNNEL_PID_FILE") 2>/dev/null; then
+        echo -e "${GREEN}● Cloudflare: ACTIVE${NC}"
+        if [ -f "$SITE_DIR/public_url.txt" ]; then
+            PUBLIC_URL=$(cat "$SITE_DIR/public_url.txt")
+            echo -e "  Public URL: ${GREEN}$PUBLIC_URL${NC}"
+        fi
+    else
+        echo -e "${RED}○ Cloudflare: INACTIVE${NC}"
+    fi
+    
+    # Website info
+    if [ -f "$SITE_DIR/index.html" ]; then
+        echo -e "${GREEN}📄 Website: $SITE_DIR/index.html${NC}"
+        SIZE=$(du -h "$SITE_DIR/index.html" | cut -f1)
+        echo -e "  Size: $SIZE"
+    else
+        echo -e "${RED}📄 No website created${NC}"
+    fi
+    
+    echo -e "${BLUE}════════════════════════════════════════${NC}"
 }
 
 # Main menu
 show_menu() {
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}🌐 WEBSITE MANAGER WITH CLOUDFLARE${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    clear
+    echo -e "${BLUE}╔══════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║     ${GREEN}SIMPLE KALI WEBSITE TOOL${BLUE}        ║${NC}"
+    echo -e "${BLUE}║        with Cloudflare Tunnel         ║${NC}"
+    echo -e "${BLUE}╚══════════════════════════════════════╝${NC}"
     echo ""
-    echo "1) Create New Website"
-    echo "2) Start Website (Local)"
-    echo "3) Stop Website"
-    echo "4) Deploy to Cloudflare (Make Public)"
-    echo "5) Show Status"
-    echo "6) Configure Cloudflare Settings"
-    echo "7) Exit"
+    echo -e "${GREEN}1)${NC} Create/Reset Website"
+    echo -e "${GREEN}2)${NC} Edit HTML with nano"
+    echo -e "${GREEN}3)${NC} Start Local Server"
+    echo -e "${GREEN}4)${NC} Stop Local Server"
+    echo -e "${GREEN}5)${NC} Start Cloudflare (Make Public)"
+    echo -e "${GREEN}6)${NC} Stop Cloudflare (Make Private)"
+    echo -e "${GREEN}7)${NC} Show Status"
+    echo -e "${GREEN}8)${NC} Exit"
     echo ""
 }
 
-# Main loop
+# Main
 main() {
-    load_config
+    # Check/create website directory
+    if [ ! -d "$SITE_DIR" ]; then
+        create_website
+    fi
+    
+    # Install cloudflared
+    install_cloudflared
     
     while true; do
         show_menu
-        read -p "Select option [1-7]: " choice
+        read -p "Choice [1-8]: " choice
         
         case $choice in
             1)
                 create_website
+                echo -e "${GREEN}[✓] Website ready!${NC}"
                 ;;
             2)
-                start_website
+                edit_html
                 ;;
             3)
-                stop_website
+                start_local
                 ;;
             4)
-                deploy_to_cloudflare
+                stop_local
                 ;;
             5)
-                show_status
+                start_cloudflare
                 ;;
             6)
-                echo -e "${YELLOW}Cloudflare configuration (optional for advanced features)${NC}"
-                read -p "Cloudflare Email: " CLOUDFLARE_EMAIL
-                read -p "Cloudflare API Key: " CLOUDFLARE_API_KEY
-                read -p "Default subdomain (yourdomain.com): " DEFAULT_SUBDOMAIN
-                save_config
-                echo -e "${GREEN}Configuration saved!${NC}"
+                stop_cloudflare
                 ;;
             7)
-                echo -e "${GREEN}Goodbye!${NC}"
+                show_status
+                ;;
+            8)
+                # Cleanup on exit
+                echo -e "${YELLOW}[+] Cleaning up...${NC}"
+                stop_cloudflare
+                stop_local
+                echo -e "${GREEN}[✓] Goodbye!${NC}"
                 exit 0
                 ;;
             *)
-                echo -e "${RED}Invalid option${NC}"
+                echo -e "${RED}[✗] Invalid option${NC}"
                 ;;
         esac
         
         echo ""
-        read -p "Press enter to continue..."
+        read -p "Press Enter to continue..."
     done
 }
 
-# Run the script
+# Run it
 main
