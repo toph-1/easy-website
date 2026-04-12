@@ -1,5 +1,5 @@
 #!/bin/bash
-# site-tool.sh - Complete working version for Kali with Cloudflare fix
+# site-tool.sh - Auto Cloudflare + Live Reload for Kali
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -11,531 +11,314 @@ SITE_DIR="$HOME/kali_site"
 PORT="8080"
 TUNNEL_PID_FILE="/tmp/cloudflare_tunnel.pid"
 SERVER_PID_FILE="/tmp/local_server.pid"
+LIVERELOAD_PID_FILE="/tmp/livereload.pid"
+LIVERELOAD_PORT=35729
 
 # Fix DNS for Cloudflare
 fix_dns() {
     echo -e "${YELLOW}[+] Configuring DNS for Cloudflare...${NC}"
-    
-    # Backup original
     sudo cp /etc/resolv.conf /etc/resolv.conf.backup 2>/dev/null
-    
-    # Set Cloudflare DNS
     echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf > /dev/null
     echo "nameserver 1.0.0.1" | sudo tee -a /etc/resolv.conf > /dev/null
-    
-    # Make immutable to prevent systemd from overwriting
     sudo chattr +i /etc/resolv.conf 2>/dev/null
-    
-    # Test DNS
     if nslookup trycloudflare.com 1.1.1.1 > /dev/null 2>&1; then
-        echo -e "${GREEN}[✓] DNS configured successfully${NC}"
+        echo -e "${GREEN}[✓] DNS configured${NC}"
         return 0
     else
-        echo -e "${RED}[✗] DNS still having issues${NC}"
+        echo -e "${RED}[✗] DNS issue${NC}"
         return 1
     fi
 }
 
-# Install cloudflared for Kali
+# Install cloudflared
 install_cloudflared() {
     if command -v cloudflared &> /dev/null; then
-        echo -e "${GREEN}[✓] cloudflared is installed${NC}"
+        echo -e "${GREEN}[✓] cloudflared installed${NC}"
         return 0
     fi
-    
-    echo -e "${YELLOW}[+] Installing cloudflared for Kali...${NC}"
-    
-    # Remove any broken installation
+    echo -e "${YELLOW}[+] Installing cloudflared...${NC}"
     sudo apt remove cloudflared -y 2>/dev/null
-    
-    # Download latest binary
     wget -q --show-progress https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /tmp/cloudflared
-    
-    if [ ! -f "/tmp/cloudflared" ]; then
-        echo -e "${RED}[✗] Download failed. Using alternative method...${NC}"
-        curl -L -o /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-    fi
-    
-    # Install
     chmod +x /tmp/cloudflared
     sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
-    
-    # Verify
-    if cloudflared --version &>/dev/null; then
-        echo -e "${GREEN}[✓] cloudflared installed successfully${NC}"
-        return 0
-    else
-        echo -e "${RED}[✗] Installation failed${NC}"
-        return 1
-    fi
+    cloudflared --version &>/dev/null && echo -e "${GREEN}[✓] Installed${NC}" || { echo -e "${RED}[✗] Failed${NC}"; return 1; }
 }
 
-# Create default website
+# Create default website (includes live reload script)
 create_website() {
     echo -e "${BLUE}[+] Creating website in $SITE_DIR${NC}"
     mkdir -p "$SITE_DIR"
-    
     cat > "$SITE_DIR/index.html" << 'EOF'
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kali Live Site</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+            background: #0a0a0a;
             color: #00ff41;
-            font-family: 'Courier New', 'Monaco', monospace;
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            position: relative;
-            overflow: hidden;
-        }
-        body::before {
-            content: ">";
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            font-size: 12px;
-            opacity: 0.5;
-            animation: blink 1s infinite;
-        }
-        @keyframes blink {
-            0%, 100% { opacity: 0.5; }
-            50% { opacity: 0; }
+            font-family: monospace;
+            text-align: center;
+            padding: 3rem;
         }
         .container {
-            text-align: center;
             border: 2px solid #00ff41;
-            padding: 3rem;
+            padding: 2rem;
             border-radius: 15px;
-            background: rgba(0, 0, 0, 0.9);
-            box-shadow: 0 0 50px rgba(0, 255, 65, 0.2);
-            backdrop-filter: blur(5px);
-            z-index: 1;
-        }
-        h1 {
-            font-size: 3em;
-            margin-bottom: 20px;
-            text-shadow: 0 0 10px #00ff41;
-        }
-        .status {
-            color: #00ff41;
-            font-weight: bold;
-            display: inline-block;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; text-shadow: 0 0 5px #00ff41; }
-            50% { opacity: 0.7; text-shadow: 0 0 15px #00ff41; }
-        }
-        .info {
-            margin: 20px 0;
-            padding: 15px;
-            background: rgba(0, 255, 65, 0.1);
-            border-radius: 8px;
-            font-size: 0.9em;
-        }
-        .url {
             background: #000;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 15px 0;
-            word-break: break-all;
-            font-size: 0.8em;
-            border-left: 3px solid #00ff41;
+            display: inline-block;
         }
-        .matrix {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            height: 30px;
-            overflow: hidden;
-            opacity: 0.3;
-            font-size: 10px;
-            white-space: nowrap;
-        }
-        button {
-            background: #00ff41;
-            color: #000;
-            border: none;
-            padding: 10px 20px;
-            margin: 5px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-family: monospace;
-            font-weight: bold;
-        }
-        button:hover {
-            background: #fff;
-            transform: scale(1.05);
-        }
-        .time {
-            margin-top: 20px;
-            font-size: 0.8em;
-            color: #888;
-        }
+        h1 { text-shadow: 0 0 10px #00ff41; }
+        .status { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.6;} }
     </style>
+    <!-- Live reload script -->
+    <script>
+        let ws;
+        function connectLiveReload() {
+            ws = new WebSocket('ws://' + location.hostname + ':35729');
+            ws.onmessage = (e) => {
+                if (e.data === 'reload') location.reload();
+            };
+            ws.onclose = () => setTimeout(connectLiveReload, 1000);
+        }
+        connectLiveReload();
+    </script>
 </head>
 <body>
-    <div class="container">
-        <h1>🐉 KALI LINUX</h1>
-        <h2>WEBSERVER ACTIVE</h2>
-        <div class="info">
-            <span class="status">● SYSTEM ONLINE</span><br>
-            Serving from your Kali machine
-        </div>
-        <div class="url" id="urlDisplay">
-            Local: <strong>http://localhost:8080</strong>
-        </div>
-        <p><small>This tunnel is secure and encrypted</small></p>
-        <div class="time" id="time"></div>
-    </div>
-    <div class="matrix" id="matrix"></div>
-    
-    <script>
-        function updateTime() {
-            document.getElementById('time').innerHTML = 'Server Time: ' + new Date().toLocaleString();
-        }
-        updateTime();
-        setInterval(updateTime, 1000);
-        
-        // Matrix effect
-        const matrix = document.getElementById('matrix');
-        const chars = '01';
-        setInterval(() => {
-            let line = '';
-            for(let i = 0; i < 50; i++) {
-                line += chars[Math.floor(Math.random() * chars.length)];
-            }
-            matrix.innerHTML = line;
-        }, 100);
-        
-        // Check if public URL exists
-        fetch('/public_url.txt')
-            .then(response => response.text())
-            .then(url => {
-                if(url && url.includes('trycloudflare.com')) {
-                    document.getElementById('urlDisplay').innerHTML += '<br>🌍 Public: <strong>' + url + '</strong>';
-                }
-            })
-            .catch(() => {});
-    </script>
+<div class="container">
+    <h1>🐉 KALI LINUX</h1>
+    <h2>WEBSERVER ACTIVE</h2>
+    <div class="status">● SYSTEM ONLINE</div>
+    <p>Serving from your Kali machine</p>
+    <div id="url"></div>
+</div>
+<script>
+    fetch('/public_url.txt')
+        .then(r=>r.text())
+        .then(url=>{ if(url && url.includes('trycloudflare.com')) document.getElementById('url').innerHTML='<strong>Public: '+url+'</strong>'; })
+        .catch(()=>{});
+</script>
 </body>
 </html>
 EOF
-    
-    echo -e "${GREEN}[✓] Website created at $SITE_DIR/index.html${NC}"
-    echo -e "${YELLOW}Edit with: nano $SITE_DIR/index.html${NC}"
+    echo -e "${GREEN}[✓] Website created${NC}"
 }
 
 # Start local server
 start_local() {
-    # Check if already running
     if [ -f "$SERVER_PID_FILE" ] && kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
-        echo -e "${YELLOW}[!] Server already running (PID: $(cat $SERVER_PID_FILE))${NC}"
+        echo -e "${YELLOW}[!] Server already running${NC}"
         return 0
     fi
-    
-    # Kill any existing servers on port
     pkill -f "python.*http.server.*$PORT" 2>/dev/null
-    pkill -f "php -S.*$PORT" 2>/dev/null
-    
     cd "$SITE_DIR"
-    
-    # Use Python3 HTTP server
-    if command -v python3 &> /dev/null; then
-        python3 -m http.server $PORT > /tmp/local_server.log 2>&1 &
-        echo $! > "$SERVER_PID_FILE"
-        sleep 1
-        
-        # Verify it's running
-        if kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
-            echo -e "${GREEN}[✓] Local server started on port $PORT${NC}"
-            echo -e "${GREEN}[✓] Access at: http://localhost:$PORT${NC}"
-            
-            # Save public URL placeholder
-            echo "Local only" > "$SITE_DIR/public_url.txt"
-            return 0
-        else
-            echo -e "${RED}[✗] Failed to start server${NC}"
-            rm "$SERVER_PID_FILE"
-            return 1
-        fi
+    python3 -m http.server $PORT > /tmp/local_server.log 2>&1 &
+    echo $! > "$SERVER_PID_FILE"
+    sleep 1
+    if kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
+        echo -e "${GREEN}[✓] Local server on http://localhost:$PORT${NC}"
+        echo "Local only" > "$SITE_DIR/public_url.txt"
+        return 0
     else
-        echo -e "${RED}[✗] Python3 not found. Install with: sudo apt install python3 -y${NC}"
+        echo -e "${RED}[✗] Server failed${NC}"
+        rm "$SERVER_PID_FILE"
         return 1
     fi
 }
 
-# Stop local server
-stop_local() {
-    if [ -f "$SERVER_PID_FILE" ]; then
-        kill $(cat "$SERVER_PID_FILE") 2>/dev/null
-        rm "$SERVER_PID_FILE"
-        echo -e "${GREEN}[✓] Local server stopped${NC}"
-    else
-        # Try to kill by process name
-        pkill -f "python.*http.server.*$PORT" && echo -e "${GREEN}[✓] Server stopped${NC}" || echo -e "${YELLOW}[!] No server running${NC}"
+# Start live reload WebSocket server (watches index.html)
+start_livereload() {
+    if [ -f "$LIVERELOAD_PID_FILE" ] && kill -0 $(cat "$LIVERELOAD_PID_FILE") 2>/dev/null; then
+        echo -e "${GREEN}[✓] Live reload already running${NC}"
+        return 0
     fi
+    echo -e "${YELLOW}[+] Starting live reload (auto-refresh on save)...${NC}"
+    # Simple Python WebSocket server that watches index.html and sends 'reload' on change
+    cat > /tmp/livereload_server.py << 'PYEOF'
+import asyncio
+import websockets
+import os
+import time
+
+WEBSOCKET_PORT = 35729
+WATCH_FILE = os.path.expanduser("~/kali_site/index.html")
+last_mtime = 0
+connected = set()
+
+async def handler(websocket):
+    connected.add(websocket)
+    try:
+        await websocket.wait_closed()
+    finally:
+        connected.remove(websocket)
+
+async def watcher():
+    global last_mtime
+    while True:
+        try:
+            mtime = os.path.getmtime(WATCH_FILE)
+            if mtime != last_mtime:
+                last_mtime = mtime
+                if connected:
+                    await asyncio.gather(*[ws.send("reload") for ws in connected])
+        except:
+            pass
+        await asyncio.sleep(0.5)
+
+async def main():
+    async with websockets.serve(handler, "0.0.0.0", WEBSOCKET_PORT):
+        await watcher()
+
+asyncio.run(main())
+PYEOF
+    python3 /tmp/livereload_server.py > /tmp/livereload.log 2>&1 &
+    echo $! > "$LIVERELOAD_PID_FILE"
+    sleep 1
+    echo -e "${GREEN}[✓] Live reload active (port $LIVERELOAD_PORT)${NC}"
 }
 
 # Start Cloudflare tunnel
 start_cloudflare() {
-    # Check if local server is running
     if [ ! -f "$SERVER_PID_FILE" ] || ! kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
-        echo -e "${RED}[✗] Local server not running!${NC}"
-        echo -e "${YELLOW}Start it first with option 3${NC}"
+        echo -e "${RED}[✗] Local server not running${NC}"
         return 1
     fi
-    
-    # Check if tunnel already running
     if [ -f "$TUNNEL_PID_FILE" ] && kill -0 $(cat "$TUNNEL_PID_FILE") 2>/dev/null; then
-        echo -e "${YELLOW}[!] Cloudflare tunnel already running${NC}"
+        echo -e "${YELLOW}[!] Tunnel already running${NC}"
         return 0
     fi
-    
-    # Fix DNS first
     fix_dns
-    
-    # Ensure cloudflared is installed
-    if ! install_cloudflared; then
-        echo -e "${RED}[✗] Cannot proceed without cloudflared${NC}"
-        return 1
-    fi
-    
+    install_cloudflared || return 1
     echo -e "${YELLOW}[+] Starting Cloudflare tunnel...${NC}"
-    echo -e "${YELLOW}This may take 10-15 seconds...${NC}"
-    
-    # Kill any existing cloudflared processes
-    pkill -f "cloudflared.*tunnel.*$PORT" 2>/dev/null
-    
-    # Start tunnel with longer timeout
+    pkill -f "cloudflared.*tunnel" 2>/dev/null
     timeout 30 cloudflared tunnel --url http://localhost:$PORT > /tmp/cloudflare.log 2>&1 &
-    TUNNEL_PID=$!
-    echo $TUNNEL_PID > "$TUNNEL_PID_FILE"
-    
-    # Wait for tunnel to establish
-    echo -n "Connecting"
-    for i in {1..15}; do
-        echo -n "."
-        sleep 1
-        if grep -q "https://.*trycloudflare.com" /tmp/cloudflare.log 2>/dev/null; then
-            echo ""
-            break
-        fi
-    done
-    echo ""
-    
-    # Extract public URL
+    echo $! > "$TUNNEL_PID_FILE"
+    sleep 8
     PUBLIC_URL=$(grep -o 'https://[-a-zA-Z0-9.]*trycloudflare.com' /tmp/cloudflare.log | head -1)
-    
     if [ -n "$PUBLIC_URL" ]; then
-        echo -e "${GREEN}════════════════════════════════════════════════${NC}"
-        echo -e "${GREEN}🌍 SUCCESS! WEBSITE IS PUBLIC!${NC}"
-        echo -e "${GREEN}════════════════════════════════════════════════${NC}"
-        echo -e "${YELLOW}Public URL: ${GREEN}$PUBLIC_URL${NC}"
-        echo -e "${YELLOW}Local URL:  ${GREEN}http://localhost:$PORT${NC}"
-        echo -e "${GREEN}════════════════════════════════════════════════${NC}"
-        
-        # Save URL
+        echo -e "${GREEN}════════════════════════════════════════════${NC}"
+        echo -e "${GREEN}🌍 PUBLIC URL: $PUBLIC_URL${NC}"
+        echo -e "${GREEN}════════════════════════════════════════════${NC}"
         echo "$PUBLIC_URL" > "$SITE_DIR/public_url.txt"
-        
-        # Generate QR code if qrencode is installed
-        if command -v qrencode &> /dev/null; then
-            echo -e "${YELLOW}QR Code for mobile access:${NC}"
-            qrencode -t ansiutf8 "$PUBLIC_URL" 2>/dev/null
-        fi
-        
-        # Show how to stop
-        echo -e "${YELLOW}To stop tunnel: Select option 6 from menu${NC}"
         return 0
     else
-        echo -e "${RED}[✗] Failed to start Cloudflare tunnel${NC}"
-        echo -e "${YELLOW}Error log:${NC}"
-        tail -10 /tmp/cloudflare.log
-        kill $TUNNEL_PID 2>/dev/null
-        rm "$TUNNEL_PID_FILE"
-        return 1
-    fi
-}
-
-# Stop Cloudflare tunnel
-stop_cloudflare() {
-    if [ -f "$TUNNEL_PID_FILE" ]; then
+        echo -e "${RED}[✗] Tunnel failed${NC}"
         kill $(cat "$TUNNEL_PID_FILE") 2>/dev/null
         rm "$TUNNEL_PID_FILE"
-        echo -e "${GREEN}[✓] Cloudflare tunnel stopped${NC}"
-        echo -e "${YELLOW}[!] Website is now private (local only)${NC}"
-    else
-        # Kill any cloudflared processes
-        pkill -f "cloudflared.*tunnel" && echo -e "${GREEN}[✓] Cloudflare tunnel stopped${NC}" || echo -e "${YELLOW}[!] No tunnel running${NC}"
+        return 1
     fi
 }
 
-# Edit HTML with nano
+# Auto mode: server + cloudflare + live reload
+auto_start() {
+    echo -e "${BLUE}>>> AUTO MODE: Starting everything...${NC}"
+    start_local || return 1
+    start_livereload
+    start_cloudflare
+    if [ -f "$TUNNEL_PID_FILE" ]; then
+        PUBLIC_URL=$(cat "$SITE_DIR/public_url.txt")
+        echo -e "${GREEN}✅ All systems ready!${NC}"
+        echo -e "${YELLOW}👉 Edit HTML: option 2 from menu${NC}"
+        echo -e "${YELLOW}👉 Open browser: $PUBLIC_URL${NC}"
+        read -p "Open in browser now? (y/n): " openit
+        if [[ "$openit" =~ ^[Yy]$ ]]; then
+            xdg-open "$PUBLIC_URL" 2>/dev/null || sensible-browser "$PUBLIC_URL" 2>/dev/null || echo -e "${YELLOW}Open manually${NC}"
+        fi
+    else
+        echo -e "${RED}Auto mode failed. Check logs.${NC}"
+    fi
+}
+
+# Edit HTML with live reload integration
 edit_html() {
-    if [ -f "$SITE_DIR/index.html" ]; then
-        echo -e "${GREEN}[+] Opening HTML editor (nano)${NC}"
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "nano shortcuts:"
-        echo -e "  ${GREEN}Ctrl+O${NC} - Save"
-        echo -e "  ${GREEN}Ctrl+X${NC} - Exit"
-        echo -e "  ${GREEN}Ctrl+W${NC} - Search"
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        read -p "Press Enter to start editing..."
-        nano "$SITE_DIR/index.html"
-        echo -e "${GREEN}[✓] HTML updated! Refresh browser to see changes${NC}"
-        
-        # If tunnel is running, show the public URL again
-        if [ -f "$TUNNEL_PID_FILE" ] && [ -f "$SITE_DIR/public_url.txt" ]; then
-            PUBLIC_URL=$(cat "$SITE_DIR/public_url.txt")
-            echo -e "${GREEN}Your public URL: $PUBLIC_URL${NC}"
-        fi
+    if [ ! -f "$SITE_DIR/index.html" ]; then
+        echo -e "${RED}[✗] No website. Run option 1 first.${NC}"
+        return
+    fi
+    echo -e "${GREEN}[+] Opening nano. Save with Ctrl+O, exit with Ctrl+X${NC}"
+    read -p "Press Enter to start editing..."
+    nano "$SITE_DIR/index.html"
+    echo -e "${GREEN}[✓] HTML saved. Browser will auto-refresh if live reload is active.${NC}"
+    if [ -f "$TUNNEL_PID_FILE" ]; then
+        PUBLIC_URL=$(cat "$SITE_DIR/public_url.txt")
+        echo -e "Your public URL: ${GREEN}$PUBLIC_URL${NC}"
+        read -p "Open it now? (y/n): " openit
+        [[ "$openit" =~ ^[Yy]$ ]] && (xdg-open "$PUBLIC_URL" 2>/dev/null || sensible-browser "$PUBLIC_URL")
     else
-        echo -e "${RED}[✗] No website found. Create one first (option 1)${NC}"
+        echo -e "Local URL: ${GREEN}http://localhost:$PORT${NC}"
     fi
 }
 
-# Show status
-show_status() {
-    clear
-    echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║     ${GREEN}KALI WEBSITE TOOL - STATUS${BLUE}              ║${NC}"
-    echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
-    echo ""
-    
-    # Local server status
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    if [ -f "$SERVER_PID_FILE" ] && kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
-        echo -e "${GREEN}● LOCAL SERVER: RUNNING${NC}"
-        echo -e "  Port: ${GREEN}$PORT${NC}"
-        echo -e "  URL:  ${GREEN}http://localhost:$PORT${NC}"
-        echo -e "  PID:  $(cat $SERVER_PID_FILE)"
-    else
-        echo -e "${RED}○ LOCAL SERVER: STOPPED${NC}"
-    fi
-    
-    # Cloudflare status
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    if [ -f "$TUNNEL_PID_FILE" ] && kill -0 $(cat "$TUNNEL_PID_FILE") 2>/dev/null; then
-        echo -e "${GREEN}● CLOUDFLARE: ACTIVE 🌍${NC}"
-        if [ -f "$SITE_DIR/public_url.txt" ]; then
-            PUBLIC_URL=$(cat "$SITE_DIR/public_url.txt")
-            if [ "$PUBLIC_URL" != "Local only" ]; then
-                echo -e "  Public URL: ${GREEN}$PUBLIC_URL${NC}"
-            fi
-        fi
-        echo -e "  Tunnel PID: $(cat $TUNNEL_PID_FILE)"
-    else
-        echo -e "${RED}○ CLOUDFLARE: INACTIVE${NC}"
-    fi
-    
-    # Website info
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    if [ -f "$SITE_DIR/index.html" ]; then
-        echo -e "${GREEN}📄 WEBSITE FILES:${NC}"
-        echo -e "  Location: $SITE_DIR"
-        echo -e "  Main file: index.html"
-        SIZE=$(du -sh "$SITE_DIR" 2>/dev/null | cut -f1)
-        echo -e "  Size: $SIZE"
-        echo -e "  Modified: $(stat -c %y "$SITE_DIR/index.html" 2>/dev/null | cut -d. -f1)"
-    else
-        echo -e "${RED}📄 No website created${NC}"
-    fi
-    
-    # Quick actions
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}Quick actions:${NC}"
-    if [ ! -f "$SERVER_PID_FILE" ]; then
-        echo -e "  → Select ${GREEN}3${NC} to start server"
-    elif [ ! -f "$TUNNEL_PID_FILE" ]; then
-        echo -e "  → Select ${GREEN}5${NC} to make public with Cloudflare"
-    else
-        echo -e "  → Select ${GREEN}6${NC} to stop Cloudflare"
-        echo -e "  → Select ${GREEN}4${NC} to stop server"
-    fi
-    echo -e "  → Select ${GREEN}2${NC} to edit HTML"
-    echo ""
+# Stop everything
+stop_all() {
+    echo -e "${YELLOW}[+] Stopping all services...${NC}"
+    [ -f "$TUNNEL_PID_FILE" ] && kill $(cat "$TUNNEL_PID_FILE") 2>/dev/null && rm "$TUNNEL_PID_FILE"
+    [ -f "$SERVER_PID_FILE" ] && kill $(cat "$SERVER_PID_FILE") 2>/dev/null && rm "$SERVER_PID_FILE"
+    [ -f "$LIVERELOAD_PID_FILE" ] && kill $(cat "$LIVERELOAD_PID_FILE") 2>/dev/null && rm "$LIVERELOAD_PID_FILE"
+    pkill -f "cloudflared.*tunnel" 2>/dev/null
+    pkill -f "python.*http.server" 2>/dev/null
+    pkill -f "livereload_server.py" 2>/dev/null
+    echo -e "${GREEN}[✓] All stopped${NC}"
 }
 
-# Show menu
+# Menu
 show_menu() {
     clear
-    echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║     ${GREEN}SIMPLE KALI WEBSITE TOOL${BLUE}              ║${NC}"
-    echo -e "${BLUE}║        with Cloudflare Tunnel              ║${NC}"
-    echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
+    echo -e "${BLUE}╔══════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║   ${GREEN}KALI WEBSITE TOOL (AUTO CF)${BLUE}    ║${NC}"
+    echo -e "${BLUE}╚══════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  ${GREEN}1)${NC} Create/Reset Website"
-    echo -e "  ${GREEN}2)${NC} Edit HTML with nano"
-    echo -e "  ${GREEN}3)${NC} Start Local Server"
+    echo -e "  ${GREEN}2)${NC} Edit HTML (auto-refresh on save)"
+    echo -e "  ${GREEN}3)${NC} Start Local Server only"
     echo -e "  ${GREEN}4)${NC} Stop Local Server"
-    echo -e "  ${GREEN}5)${NC} Start Cloudflare (Make Public)"
-    echo -e "  ${GREEN}6)${NC} Stop Cloudflare (Make Private)"
+    echo -e "  ${GREEN}5)${NC} Start Cloudflare Tunnel only"
+    echo -e "  ${GREEN}6)${NC} Stop Cloudflare Tunnel"
     echo -e "  ${GREEN}7)${NC} Show Status"
-    echo -e "  ${GREEN}8)${NC} Exit"
+    echo -e "  ${GREEN}8)${NC} Stop Everything"
+    echo -e "  ${GREEN}9)${NC} 🚀 AUTO MODE (Server + Cloudflare + Live Reload)"
+    echo -e "  ${GREEN}0)${NC} Exit"
     echo ""
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
-# Main function
+# Main
 main() {
-    # Initial setup
-    if [ ! -d "$SITE_DIR" ]; then
-        echo -e "${YELLOW}[!] First time setup...${NC}"
-        create_website
-        echo ""
-    fi
-    
+    [ ! -d "$SITE_DIR" ] && create_website
     while true; do
         show_menu
-        read -p "Select option [1-8]: " choice
-        
+        read -p "Select option: " choice
         case $choice in
-            1)
-                create_website
-                ;;
-            2)
-                edit_html
-                ;;
-            3)
-                start_local
-                ;;
-            4)
-                stop_local
-                ;;
-            5)
-                start_cloudflare
-                ;;
-            6)
-                stop_cloudflare
-                ;;
-            7)
-                show_status
-                ;;
-            8)
-                echo -e "${YELLOW}[+] Cleaning up...${NC}"
-                stop_cloudflare
-                stop_local
-                echo -e "${GREEN}[✓] All services stopped${NC}"
-                echo -e "${GREEN}Goodbye!${NC}"
-                exit 0
-                ;;
-            *)
-                echo -e "${RED}[✗] Invalid option${NC}"
-                ;;
+            1) create_website ;;
+            2) edit_html ;;
+            3) start_local ;;
+            4) stop_all; start_local ;;  # stop then start local only
+            5) start_cloudflare ;;
+            6) stop_cloudflare ;;
+            7) show_status ;;
+            8) stop_all ;;
+            9) auto_start ;;
+            0) stop_all; echo -e "${GREEN}Goodbye!${NC}"; exit 0 ;;
+            *) echo -e "${RED}Invalid${NC}" ;;
         esac
-        
-        echo ""
-        read -p "Press Enter to continue..."
+        echo ""; read -p "Press Enter..."
     done
 }
 
-# Run the script
+# Helper functions missing
+stop_cloudflare() {
+    [ -f "$TUNNEL_PID_FILE" ] && kill $(cat "$TUNNEL_PID_FILE") 2>/dev/null && rm "$TUNNEL_PID_FILE"
+    pkill -f "cloudflared.*tunnel" 2>/dev/null
+    echo -e "${GREEN}[✓] Tunnel stopped${NC}"
+}
+
+show_status() {
+    clear
+    echo -e "${BLUE}Status:${NC}"
+    [ -f "$SERVER_PID_FILE" ] && kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null && echo -e "${GREEN}● Local server: RUNNING${NC}" || echo -e "${RED}○ Local server: STOPPED${NC}"
+    [ -f "$TUNNEL_PID_FILE" ] && kill -0 $(cat "$TUNNEL_PID_FILE") 2>/dev/null && echo -e "${GREEN}● Cloudflare: ACTIVE ($(cat $SITE_DIR/public_url.txt 2>/dev/null))${NC}" || echo -e "${RED}○ Cloudflare: INACTIVE${NC}"
+    [ -f "$LIVERELOAD_PID_FILE" ] && kill -0 $(cat "$LIVERELOAD_PID_FILE") 2>/dev/null && echo -e "${GREEN}● Live reload: ACTIVE${NC}" || echo -e "${RED}○ Live reload: INACTIVE${NC}"
+}
+
 main
