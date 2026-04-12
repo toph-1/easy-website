@@ -1,5 +1,5 @@
 #!/bin/bash
-# site-tool.sh - Auto Cloudflare + Live Reload for Kali
+# site-tool.sh - Auto Cloudflare + IP logging + Live Reload for Kali
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -12,7 +12,6 @@ PORT="8080"
 TUNNEL_PID_FILE="/tmp/cloudflare_tunnel.pid"
 SERVER_PID_FILE="/tmp/local_server.pid"
 LIVERELOAD_PID_FILE="/tmp/livereload.pid"
-LIVERELOAD_PORT=35729
 
 # Fix DNS for Cloudflare
 fix_dns() {
@@ -21,13 +20,7 @@ fix_dns() {
     echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf > /dev/null
     echo "nameserver 1.0.0.1" | sudo tee -a /etc/resolv.conf > /dev/null
     sudo chattr +i /etc/resolv.conf 2>/dev/null
-    if nslookup trycloudflare.com 1.1.1.1 > /dev/null 2>&1; then
-        echo -e "${GREEN}[✓] DNS configured${NC}"
-        return 0
-    else
-        echo -e "${RED}[✗] DNS issue${NC}"
-        return 1
-    fi
+    nslookup trycloudflare.com 1.1.1.1 > /dev/null 2>&1 && echo -e "${GREEN}[✓] DNS OK${NC}" || echo -e "${RED}[✗] DNS issue${NC}"
 }
 
 # Install cloudflared
@@ -44,10 +37,12 @@ install_cloudflared() {
     cloudflared --version &>/dev/null && echo -e "${GREEN}[✓] Installed${NC}" || { echo -e "${RED}[✗] Failed${NC}"; return 1; }
 }
 
-# Create default website (includes live reload script)
+# Create default website with IP viewer page
 create_website() {
     echo -e "${BLUE}[+] Creating website in $SITE_DIR${NC}"
     mkdir -p "$SITE_DIR"
+    
+    # Main index.html
     cat > "$SITE_DIR/index.html" << 'EOF'
 <!DOCTYPE html>
 <html>
@@ -55,32 +50,18 @@ create_website() {
     <meta charset="UTF-8">
     <title>Kali Live Site</title>
     <style>
-        body {
-            background: #0a0a0a;
-            color: #00ff41;
-            font-family: monospace;
-            text-align: center;
-            padding: 3rem;
-        }
-        .container {
-            border: 2px solid #00ff41;
-            padding: 2rem;
-            border-radius: 15px;
-            background: #000;
-            display: inline-block;
-        }
+        body { background: #0a0a0a; color: #00ff41; font-family: monospace; text-align: center; padding: 3rem; }
+        .container { border: 2px solid #00ff41; padding: 2rem; border-radius: 15px; background: #000; display: inline-block; }
         h1 { text-shadow: 0 0 10px #00ff41; }
         .status { animation: pulse 2s infinite; }
         @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.6;} }
+        a { color: #00ff41; }
     </style>
-    <!-- Live reload script -->
     <script>
         let ws;
         function connectLiveReload() {
             ws = new WebSocket('ws://' + location.hostname + ':35729');
-            ws.onmessage = (e) => {
-                if (e.data === 'reload') location.reload();
-            };
+            ws.onmessage = (e) => { if (e.data === 'reload') location.reload(); };
             ws.onclose = () => setTimeout(connectLiveReload, 1000);
         }
         connectLiveReload();
@@ -92,6 +73,8 @@ create_website() {
     <h2>WEBSERVER ACTIVE</h2>
     <div class="status">● SYSTEM ONLINE</div>
     <p>Serving from your Kali machine</p>
+    <p>🔒 <strong>Secure HTTPS</strong> via Cloudflare Tunnel</p>
+    <p><a href="/ips">📊 View visitor IPs</a></p>
     <div id="url"></div>
 </div>
 <script>
@@ -103,22 +86,124 @@ create_website() {
 </body>
 </html>
 EOF
-    echo -e "${GREEN}[✓] Website created${NC}"
+
+    # IP viewer page (auto-refreshes)
+    cat > "$SITE_DIR/ips.html" << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Visitor IPs</title>
+    <meta http-equiv="refresh" content="5">
+    <style>
+        body { background: #0a0a0a; color: #00ff41; font-family: monospace; padding: 2rem; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #00ff41; padding: 8px; text-align: left; }
+        th { background: #1a1a1a; }
+    </style>
+</head>
+<body>
+    <h1>🌐 Recent Visitor IPs</h1>
+    <table id="ipTable">
+        <tr><th>Time</th><th>IP Address</th><th>Page</th></tr>
+    </table>
+    <p>Auto-refreshes every 5 seconds. <a href="/">Back to site</a></p>
+    <script>
+        function loadIPs() {
+            fetch('/api/ips')
+                .then(r => r.json())
+                .then(data => {
+                    const tbody = document.querySelector('#ipTable');
+                    // Keep header, remove old rows
+                    while(tbody.rows.length > 1) tbody.deleteRow(1);
+                    data.forEach(entry => {
+                        const row = tbody.insertRow();
+                        row.insertCell(0).textContent = entry.time;
+                        row.insertCell(1).textContent = entry.ip;
+                        row.insertCell(2).textContent = entry.path;
+                    });
+                })
+                .catch(console.error);
+        }
+        loadIPs();
+        setInterval(loadIPs, 5000);
+    </script>
+</body>
+</html>
+EOF
+
+    echo -e "${GREEN}[✓] Website created (includes IP viewer at /ips)${NC}"
 }
 
-# Start local server
+# Custom HTTP server with IP logging
 start_local() {
     if [ -f "$SERVER_PID_FILE" ] && kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
         echo -e "${YELLOW}[!] Server already running${NC}"
         return 0
     fi
-    pkill -f "python.*http.server.*$PORT" 2>/dev/null
-    cd "$SITE_DIR"
-    python3 -m http.server $PORT > /tmp/local_server.log 2>&1 &
+    pkill -f "custom_http_server.py" 2>/dev/null
+    
+    cat > /tmp/custom_http_server.py << 'PYEOF'
+#!/usr/bin/env python3
+import os
+import json
+import time
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from socketserver import ThreadingMixIn
+from urllib.parse import urlparse
+
+SITE_DIR = os.path.expanduser("~/kali_site")
+LOG_FILE = os.path.join(SITE_DIR, "visitors.log")
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    pass
+
+class IPLoggingHandler(SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Log to file with client IP
+        client_ip = self.client_address[0]
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        path = self.path
+        with open(LOG_FILE, "a") as f:
+            f.write(f"{timestamp} | {client_ip} | {path}\n")
+        super().log_message(format, *args)
+    
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/ips":
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            # Read last 50 entries
+            entries = []
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, "r") as f:
+                    lines = f.readlines()[-50:]
+                for line in lines:
+                    parts = line.strip().split(" | ")
+                    if len(parts) >= 3:
+                        entries.append({"time": parts[0], "ip": parts[1], "path": parts[2]})
+            self.wfile.write(json.dumps(entries).encode())
+            return
+        elif parsed.path == "/ips":
+            # Serve ips.html
+            self.path = "/ips.html"
+        # Serve static files
+        return super().do_GET()
+
+if __name__ == "__main__":
+    os.chdir(SITE_DIR)
+    server = ThreadingHTTPServer(("0.0.0.0", 8080), IPLoggingHandler)
+    print(f"Serving {SITE_DIR} on port 8080")
+    server.serve_forever()
+PYEOF
+
+    python3 /tmp/custom_http_server.py > /tmp/local_server.log 2>&1 &
     echo $! > "$SERVER_PID_FILE"
     sleep 1
     if kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null; then
-        echo -e "${GREEN}[✓] Local server on http://localhost:$PORT${NC}"
+        echo -e "${GREEN}[✓] Custom server started (IP logging active)${NC}"
+        echo -e "${GREEN}[✓] Visitor IPs logged to $SITE_DIR/visitors.log${NC}"
         echo "Local only" > "$SITE_DIR/public_url.txt"
         return 0
     else
@@ -128,21 +213,17 @@ start_local() {
     fi
 }
 
-# Start live reload WebSocket server (watches index.html)
+# Live reload WebSocket server
 start_livereload() {
     if [ -f "$LIVERELOAD_PID_FILE" ] && kill -0 $(cat "$LIVERELOAD_PID_FILE") 2>/dev/null; then
-        echo -e "${GREEN}[✓] Live reload already running${NC}"
         return 0
     fi
-    echo -e "${YELLOW}[+] Starting live reload (auto-refresh on save)...${NC}"
-    # Simple Python WebSocket server that watches index.html and sends 'reload' on change
     cat > /tmp/livereload_server.py << 'PYEOF'
 import asyncio
 import websockets
 import os
 import time
 
-WEBSOCKET_PORT = 35729
 WATCH_FILE = os.path.expanduser("~/kali_site/index.html")
 last_mtime = 0
 connected = set()
@@ -168,15 +249,14 @@ async def watcher():
         await asyncio.sleep(0.5)
 
 async def main():
-    async with websockets.serve(handler, "0.0.0.0", WEBSOCKET_PORT):
+    async with websockets.serve(handler, "0.0.0.0", 35729):
         await watcher()
 
 asyncio.run(main())
 PYEOF
     python3 /tmp/livereload_server.py > /tmp/livereload.log 2>&1 &
     echo $! > "$LIVERELOAD_PID_FILE"
-    sleep 1
-    echo -e "${GREEN}[✓] Live reload active (port $LIVERELOAD_PORT)${NC}"
+    echo -e "${GREEN}[✓] Live reload active${NC}"
 }
 
 # Start Cloudflare tunnel
@@ -191,7 +271,7 @@ start_cloudflare() {
     fi
     fix_dns
     install_cloudflared || return 1
-    echo -e "${YELLOW}[+] Starting Cloudflare tunnel...${NC}"
+    echo -e "${YELLOW}[+] Starting Cloudflare tunnel (secure HTTPS)...${NC}"
     pkill -f "cloudflared.*tunnel" 2>/dev/null
     timeout 30 cloudflared tunnel --url http://localhost:$PORT > /tmp/cloudflare.log 2>&1 &
     echo $! > "$TUNNEL_PID_FILE"
@@ -199,7 +279,8 @@ start_cloudflare() {
     PUBLIC_URL=$(grep -o 'https://[-a-zA-Z0-9.]*trycloudflare.com' /tmp/cloudflare.log | head -1)
     if [ -n "$PUBLIC_URL" ]; then
         echo -e "${GREEN}════════════════════════════════════════════${NC}"
-        echo -e "${GREEN}🌍 PUBLIC URL: $PUBLIC_URL${NC}"
+        echo -e "${GREEN}🌍 SECURE PUBLIC URL: $PUBLIC_URL${NC}"
+        echo -e "${GREEN}📊 View visitor IPs: $PUBLIC_URL/ips${NC}"
         echo -e "${GREEN}════════════════════════════════════════════${NC}"
         echo "$PUBLIC_URL" > "$SITE_DIR/public_url.txt"
         return 0
@@ -211,9 +292,9 @@ start_cloudflare() {
     fi
 }
 
-# Auto mode: server + cloudflare + live reload
+# AUTO MODE: server + live reload + cloudflare
 auto_start() {
-    echo -e "${BLUE}>>> AUTO MODE: Starting everything...${NC}"
+    echo -e "${BLUE}>>> AUTO MODE: Starting everything (secure + IP logging)...${NC}"
     start_local || return 1
     start_livereload
     start_cloudflare
@@ -231,7 +312,7 @@ auto_start() {
     fi
 }
 
-# Edit HTML with live reload integration
+# Edit HTML
 edit_html() {
     if [ ! -f "$SITE_DIR/index.html" ]; then
         echo -e "${RED}[✗] No website. Run option 1 first.${NC}"
@@ -246,8 +327,6 @@ edit_html() {
         echo -e "Your public URL: ${GREEN}$PUBLIC_URL${NC}"
         read -p "Open it now? (y/n): " openit
         [[ "$openit" =~ ^[Yy]$ ]] && (xdg-open "$PUBLIC_URL" 2>/dev/null || sensible-browser "$PUBLIC_URL")
-    else
-        echo -e "Local URL: ${GREEN}http://localhost:$PORT${NC}"
     fi
 }
 
@@ -258,7 +337,7 @@ stop_all() {
     [ -f "$SERVER_PID_FILE" ] && kill $(cat "$SERVER_PID_FILE") 2>/dev/null && rm "$SERVER_PID_FILE"
     [ -f "$LIVERELOAD_PID_FILE" ] && kill $(cat "$LIVERELOAD_PID_FILE") 2>/dev/null && rm "$LIVERELOAD_PID_FILE"
     pkill -f "cloudflared.*tunnel" 2>/dev/null
-    pkill -f "python.*http.server" 2>/dev/null
+    pkill -f "custom_http_server.py" 2>/dev/null
     pkill -f "livereload_server.py" 2>/dev/null
     echo -e "${GREEN}[✓] All stopped${NC}"
 }
@@ -286,6 +365,14 @@ show_menu() {
 # Main
 main() {
     [ ! -d "$SITE_DIR" ] && create_website
+    # If first argument is --auto, run auto mode and exit
+    if [[ "$1" == "--auto" ]]; then
+        auto_start
+        echo -e "${YELLOW}Press Ctrl+C to stop everything later, or run the script again to use menu.${NC}"
+        # Keep script alive to show logs
+        tail -f /tmp/cloudflare.log 2>/dev/null
+        exit 0
+    fi
     while true; do
         show_menu
         read -p "Select option: " choice
@@ -293,7 +380,7 @@ main() {
             1) create_website ;;
             2) edit_html ;;
             3) start_local ;;
-            4) stop_all; start_local ;;  # stop then start local only
+            4) stop_all; start_local ;;
             5) start_cloudflare ;;
             6) stop_cloudflare ;;
             7) show_status ;;
@@ -306,7 +393,7 @@ main() {
     done
 }
 
-# Helper functions missing
+# Helper functions
 stop_cloudflare() {
     [ -f "$TUNNEL_PID_FILE" ] && kill $(cat "$TUNNEL_PID_FILE") 2>/dev/null && rm "$TUNNEL_PID_FILE"
     pkill -f "cloudflared.*tunnel" 2>/dev/null
@@ -316,9 +403,13 @@ stop_cloudflare() {
 show_status() {
     clear
     echo -e "${BLUE}Status:${NC}"
-    [ -f "$SERVER_PID_FILE" ] && kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null && echo -e "${GREEN}● Local server: RUNNING${NC}" || echo -e "${RED}○ Local server: STOPPED${NC}"
+    [ -f "$SERVER_PID_FILE" ] && kill -0 $(cat "$SERVER_PID_FILE") 2>/dev/null && echo -e "${GREEN}● Local server: RUNNING (IP logging)${NC}" || echo -e "${RED}○ Local server: STOPPED${NC}"
     [ -f "$TUNNEL_PID_FILE" ] && kill -0 $(cat "$TUNNEL_PID_FILE") 2>/dev/null && echo -e "${GREEN}● Cloudflare: ACTIVE ($(cat $SITE_DIR/public_url.txt 2>/dev/null))${NC}" || echo -e "${RED}○ Cloudflare: INACTIVE${NC}"
     [ -f "$LIVERELOAD_PID_FILE" ] && kill -0 $(cat "$LIVERELOAD_PID_FILE") 2>/dev/null && echo -e "${GREEN}● Live reload: ACTIVE${NC}" || echo -e "${RED}○ Live reload: INACTIVE${NC}"
+    if [ -f "$SITE_DIR/visitors.log" ]; then
+        echo -e "${YELLOW}📊 Last 5 visitors:${NC}"
+        tail -5 "$SITE_DIR/visitors.log" | while read line; do echo "   $line"; done
+    fi
 }
 
-main
+main "$@"
